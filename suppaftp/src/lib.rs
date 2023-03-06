@@ -131,7 +131,9 @@ extern crate lazy_regex;
 extern crate log;
 
 // -- private
-#[cfg(feature = "async")]
+#[cfg(all(feature = "async-std", not(feature="tokio")))]
+mod async_ftp;
+#[cfg(all(feature = "tokio", not(feature="async-std")))]
 mod async_ftp;
 pub(crate) mod command;
 mod regex;
@@ -141,65 +143,33 @@ mod sync_ftp;
 // -- public
 pub mod list;
 pub mod types;
+pub mod builder;
 
 // -- secure deps
 #[cfg(feature = "native-tls")]
-pub extern crate native_tls_crate as native_tls;
+pub extern crate native_tls;
 #[cfg(feature = "rustls")]
-pub extern crate rustls_crate as rustls;
+pub extern crate rustls;
+
 // -- async deps
 #[cfg(feature = "async-native-tls")]
-pub extern crate async_native_tls_crate as async_native_tls;
+pub extern crate async_native_tls;
+#[cfg(feature = "async-rustls")]
+pub extern crate async_rustls;
 
 // -- export (common)
 pub use status::Status;
 pub use types::{FtpError, FtpResult, Mode};
 
 // -- export sync
-use sync_ftp::{ImplFtpStream, NoTlsStream};
-pub type FtpStream = ImplFtpStream<NoTlsStream>;
-pub use sync_ftp::DataStream;
-// -- export secure (native-tls)
-#[cfg(feature = "native-tls")]
-pub use sync_ftp::NativeTlsConnector;
-#[cfg(feature = "native-tls")]
-use sync_ftp::NativeTlsStream;
-#[cfg(feature = "native-tls")]
-pub type NativeTlsFtpStream = ImplFtpStream<NativeTlsStream>;
-// -- export secure (rustls)
-#[cfg(feature = "rustls")]
-pub use sync_ftp::RustlsConnector;
-#[cfg(feature = "rustls")]
-use sync_ftp::RustlsStream;
-#[cfg(feature = "rustls")]
-pub type RustlsFtpStream = ImplFtpStream<RustlsStream>;
+pub use sync_ftp::FtpStream;
 
 // -- export async
-#[cfg(feature = "async")]
-use async_ftp::AsyncNoTlsStream;
-#[cfg(feature = "async")]
-use async_ftp::ImplAsyncFtpStream;
-#[cfg(feature = "async")]
-pub type AsyncFtpStream = ImplAsyncFtpStream<AsyncNoTlsStream>;
-#[cfg(feature = "async")]
-pub use async_ftp::DataStream as AsyncDataStream;
-// -- export async secure (native-tls)
-#[cfg(feature = "async-native-tls")]
-pub use async_ftp::AsyncNativeTlsConnector;
-#[cfg(feature = "async-native-tls")]
-use async_ftp::AsyncNativeTlsStream;
-#[cfg(feature = "async-native-tls")]
-pub type AsyncNativeTlsFtpStream = ImplAsyncFtpStream<AsyncNativeTlsStream>;
-// -- export async secure (rustls)
-#[cfg(feature = "async-rustls")]
-pub use async_ftp::AsyncRustlsConnector;
-#[cfg(feature = "async-rustls")]
-use async_ftp::AsyncRustlsStream;
-#[cfg(feature = "async-rustls")]
-pub type AsyncRustlsFtpStream = ImplAsyncFtpStream<AsyncRustlsStream>;
+#[cfg(any(feature = "async-std", feature="tokio"))]
+pub use async_ftp::AsyncFtpStream;
 
 // -- test logging
 #[cfg(test)]
 pub fn log_init() {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = env_logger::builder().is_test(true).filter_level(log::LevelFilter::Trace).try_init();
 }

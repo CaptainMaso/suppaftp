@@ -17,7 +17,7 @@ use log::LevelFilter;
 use std::io;
 use std::io::Write;
 use std::str::FromStr;
-use suppaftp::{FtpError, NativeTlsFtpStream as FtpStream};
+use suppaftp::{FtpError, FtpStream};
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const APP_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
@@ -105,7 +105,7 @@ fn perform(ftp: &mut Option<FtpStream>, command: Command) {
 
 fn perform_uninitialized(command: Command) -> Option<FtpStream> {
     match command {
-        Command::Connect(remote, secure) => connect(remote.as_str(), secure),
+        Command::Connect(remote, secure) => connect(remote.as_str(), secure, std::time::Duration::from_secs(10)),
         _ => {
             eprintln!("Can't perform command: you must connect to remote first");
             None
@@ -118,7 +118,7 @@ fn perform_connected(ftp: &mut FtpStream, command: Command) {
         Command::Appe(src, dest) => appe(ftp, src.as_path(), dest.as_str()),
         Command::Cdup => cdup(ftp),
         Command::Connect(remote, secure) => {
-            if let Some(stream) = connect(remote.as_str(), secure) {
+            if let Some(stream) = connect(remote.as_str(), secure, std::time::Duration::from_secs(10)) {
                 *ftp = stream;
             }
         }

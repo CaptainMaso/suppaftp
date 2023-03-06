@@ -19,7 +19,6 @@ pub enum FtpError {
     #[error("Connection error: {0}")]
     ConnectionError(std::io::Error),
     /// There was an error with the secure stream
-    #[cfg(any(feature = "secure", feature = "async-secure"))]
     #[error("Secure error: {0}")]
     SecureError(String),
     /// Unexpected response from remote. The command expected a certain response, but got another one.
@@ -36,47 +35,33 @@ pub enum FtpError {
 }
 
 /// Defines a response from the ftp server
-#[derive(Clone, Debug, Error)]
+#[derive(Clone, Error)]
 pub struct Response {
     pub status: Status,
     pub body: Vec<u8>,
 }
 
-/// Text Format Control used in `TYPE` command
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum FormatControl {
-    /// Default text format control (is NonPrint)
-    Default,
-    /// Non-print (not destined for printing)
-    NonPrint,
-    /// Telnet format control (\<CR\>, \<FF\>, etc.)
-    Telnet,
-    /// ASA (Fortran) Carriage Control
-    Asa,
-}
+impl std::fmt::Debug for Response {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_struct("Response");
+        d.field("status", &self.status);
+        if let Ok(s) = std::str::from_utf8(&self.body) {
+            d.field("body", &s);
+        }
+        else {
+            struct Hex<'a>(&'a [u8]);
 
-/// File Type used in `TYPE` command
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum FileType {
-    /// ASCII text (the argument is the text format control)
-    Ascii(FormatControl),
-    /// EBCDIC text (the argument is the text format control)
-    Ebcdic(FormatControl),
-    /// Image,
-    Image,
-    /// Binary (the synonym to Image)
-    Binary,
-    /// Local format (the argument is the number of bits in one byte on local machine)
-    Local(u8),
-}
+            impl std::fmt::Debug for Hex<'_> {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    write!(f,"{:X?}", &self.0)
+                }
+            }
 
-/// Connection mode for data channel
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    Active,
-    /// Required by some servers (ipv6); defined in rfc 2428 <https://www.rfc-editor.org/rfc/rfc2428#section-3>
-    ExtendedPassive,
-    Passive,
+            d.field("body", &Hex(&self.body));
+        }
+
+        d.finish()
+    }
 }
 
 impl fmt::Display for Response {
@@ -102,26 +87,62 @@ impl Response {
     }
 }
 
-impl ToString for FormatControl {
-    fn to_string(&self) -> String {
+/// Text Format Control used in `TYPE` command
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FormatControl {
+    /// Default text format control (is NonPrint)
+    Default,
+    /// Non-print (not destined for printing)
+    NonPrint,
+    /// Telnet format control (\<CR\>, \<FF\>, etc.)
+    Telnet,
+    /// ASA (Fortran) Carriage Control
+    Asa,
+}
+
+impl std::fmt::Display for FormatControl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FormatControl::Default | FormatControl::NonPrint => String::from("N"),
-            FormatControl::Telnet => String::from("T"),
-            FormatControl::Asa => String::from("C"),
+            FormatControl::Default | FormatControl::NonPrint => f.pad("N"),
+            FormatControl::Telnet => f.pad("T"),
+            FormatControl::Asa => f.pad("C"),
         }
     }
 }
 
-impl ToString for FileType {
-    fn to_string(&self) -> String {
+/// File Type used in `TYPE` command
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FileType {
+    /// ASCII text (the argument is the text format control)
+    Ascii(FormatControl),
+    /// EBCDIC text (the argument is the text format control)
+    Ebcdic(FormatControl),
+    /// Image,
+    Image,
+    /// Binary (the synonym to Image)
+    Binary,
+    /// Local format (the argument is the number of bits in one byte on local machine)
+    Local(u8),
+}
+
+impl std::fmt::Display for FileType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FileType::Ascii(fc) => format!("A {}", fc.to_string()),
-            FileType::Ebcdic(fc) => format!("E {}", fc.to_string()),
-            FileType::Image | FileType::Binary => String::from("I"),
-            FileType::Local(bits) => format!("L {bits}"),
+            FileType::Ascii(fc) => write!(f, "A {}", fc),
+            FileType::Ebcdic(fc) => write!(f, "E {}", fc),
+            FileType::Image | FileType::Binary => write!(f, "I"),
+            FileType::Local(bits) => write!(f, "L {bits}"),
         }
     }
 }
+
+/// Connection mode for data channel
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Active,
+    Passive,
+}
+
 
 #[cfg(test)]
 mod test {

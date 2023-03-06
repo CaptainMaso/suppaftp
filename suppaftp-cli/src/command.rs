@@ -72,7 +72,6 @@ impl FromStr for Command {
                 },
                 "MODE" => match args.next() {
                     Some("ACTIVE") => Ok(Self::Mode(Mode::Active)),
-                    Some("EXTPASSIVE") => Ok(Self::Mode(Mode::ExtendedPassive)),
                     Some("PASSIVE") => Ok(Self::Mode(Mode::Passive)),
                     Some(_) => Err("Invalid mode"),
                     None => Err("Missing `mode` field"),
