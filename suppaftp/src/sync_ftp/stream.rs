@@ -1,13 +1,16 @@
 //! # Data Stream
 //!
 //! This module exposes the data stream where bytes must be written to/read from
-use std::io::{Read, Write};
+use std::io::{Read, Write, BufRead};
 use std::net::{TcpStream, ToSocketAddrs};
 
 use crate::{FtpResult, FtpError};
 
+use super::lines::{Lines, ReadLine};
+use super::response::Response;
+
 /// Data Stream used for communications. It can be both of type Tcp in case of plain communication or Ssl in case of FTPS
-pub enum CommandStream {
+enum CommandStreamInner {
     Tcp(TcpStream),
     #[cfg(feature="native-tls")]
     NativeTls {
@@ -23,32 +26,44 @@ pub enum CommandStream {
     },
 }
 
+pub struct CommandStream {
+    inner : Lines<CommandStreamInner>
+}
+
 impl CommandStream {
     /// Try to connect to the remote server
     pub fn connect<A: ToSocketAddrs>(addr: A) -> FtpResult<Self> {
         trace!("Connecting to server");
-        TcpStream::connect(addr)
+        let inner = TcpStream::connect(addr)
             .map_err(FtpError::ConnectionError)
-            .map(Self::Tcp)
+            .map(CommandStreamInner::Tcp)?;
+
+        let inner = Lines::new(inner,std::time::Duration::from_secs(5));
+
+        Ok(Self { inner })
     }
 
     /// Try to connect to the remote server but with the specified timeout
     pub fn connect_timeout<A : ToSocketAddrs>(addr: A, timeout: std::time::Duration) -> FtpResult<Self> {
         trace!("Connecting to server");
-        tcp_connect_timeout(addr,timeout)
+        let inner = tcp_connect_timeout(addr,timeout)
             .map_err(FtpError::ConnectionError)
-            .map(Self::Tcp)
+            .map(CommandStreamInner::Tcp)?;
+
+        let inner = Lines::new(inner,std::time::Duration::from_secs(5));
+
+        Ok(Self { inner })
     }
 
     pub fn local_addr(&self) -> FtpResult<std::net::SocketAddr> {
-        let sock = match self {
-            CommandStream::Tcp(s) => s.local_addr().map_err(FtpError::ConnectionError)?,
+        let sock = match &*self.inner {
+            CommandStreamInner::Tcp(s) => s.local_addr().map_err(FtpError::ConnectionError)?,
             #[cfg(feature = "native-tls")]
-            CommandStream::NativeTls { stream, .. } => {
+            CommandStreamInner::NativeTls { stream, .. } => {
                 stream.get_ref().local_addr().map_err(FtpError::ConnectionError)?
             },
             #[cfg(feature = "rustls")]
-            CommandStream::Rustls { stream, .. } => {
+            CommandStreamInner::Rustls { stream, .. } => {
                 stream.get_ref().local_addr().map_err(FtpError::ConnectionError)?
             },
         };
@@ -57,24 +72,24 @@ impl CommandStream {
     }
 
     pub fn is_secure(&self) -> bool {
-        match self {
-            CommandStream::Tcp(_) => false,
+        match &*self.inner {
+            CommandStreamInner::Tcp(_) => false,
             #[cfg(feature = "native-tls")]
-            CommandStream::NativeTls { .. } => true,
+            CommandStreamInner::NativeTls { .. } => true,
             #[cfg(feature = "rustls")]
-            CommandStream::Rustls { .. } => true,
+            CommandStreamInner::Rustls { .. } => true,
         }
     }
 
     pub fn peer_addr(&self) -> FtpResult<std::net::SocketAddr> {
-        let sock = match self {
-            CommandStream::Tcp(s) => s.peer_addr().map_err(FtpError::ConnectionError)?,
+        let sock = match &*self.inner {
+            CommandStreamInner::Tcp(s) => s.peer_addr().map_err(FtpError::ConnectionError)?,
             #[cfg(feature = "native-tls")]
-            CommandStream::NativeTls { stream, .. } => {
+            CommandStreamInner::NativeTls { stream, .. } => {
                 stream.get_ref().peer_addr().map_err(FtpError::ConnectionError)?
             },
             #[cfg(feature = "rustls")]
-            CommandStream::Rustls { stream, .. } => {
+            CommandStreamInner::Rustls { stream, .. } => {
                 stream.get_ref().peer_addr().map_err(FtpError::ConnectionError)?
             },
         };
@@ -91,6 +106,7 @@ impl CommandStream {
     ) -> FtpResult<Self> {
         let domain = domain.to_string();
         let config = config.into();
+        let timeout = self.inner.timeout();
         let stream = self.into_tcp_stream()?;
         let server_name = rustls::ServerName::try_from(&*domain)
             .map_err(|e| FtpError::SecureError(e.to_string()))?;
@@ -100,7 +116,10 @@ impl CommandStream {
 
         let stream = Box::new(rustls::StreamOwned::new(conn,stream));
 
-        Ok(Self::Rustls { server_name, config, stream })
+        let inner = CommandStreamInner::Rustls { server_name, config, stream };
+        let inner = Lines::new(inner,timeout);
+
+        Ok(Self { inner })
     }
 
     /// Switch to explicit secure mode using NativeTls
@@ -111,25 +130,32 @@ impl CommandStream {
         connector : native_tls::TlsConnector
     ) -> FtpResult<Self> {
         let domain = domain.to_string();
-
+        let timeout = self.inner.timeout();
         let stream = self.into_tcp_stream()?;
 
         let stream = connector.connect(&domain, stream)
             .map_err(|e| FtpError::SecureError(e.to_string()))?;
 
-        Ok(Self::NativeTls { domain, connector, stream })
+        let inner = CommandStreamInner::NativeTls { domain, connector, stream };
+
+        let inner = Lines::new(inner,timeout);
+
+        Ok(Self { inner })
     }
 
     pub fn into_insecure(self) -> FtpResult<Self> {
-        Ok(Self::Tcp(self.into_tcp_stream()?))
+        let timeout = self.inner.timeout();
+        let stream = CommandStreamInner::Tcp(self.into_tcp_stream()?);
+        let inner = Lines::new(stream,timeout);
+        Ok(Self{ inner })
     }
 
     /// Unwrap the stream into TcpStream. This method is only used in secure connection.
     pub fn into_tcp_stream(self) -> FtpResult<TcpStream> {
-        match self {
-            CommandStream::Tcp(stream) => Ok(stream),
+        match self.inner.take() {
+            CommandStreamInner::Tcp(stream) => Ok(stream),
             #[cfg(feature="native-tls")]
-            CommandStream::NativeTls{ mut stream, .. } => {
+            CommandStreamInner::NativeTls{ mut stream, .. } => {
                 let s = stream.get_ref().try_clone()
                     .map_err(|e| FtpError::SecureError(e.to_string()))?;
                 stream.flush()
@@ -137,7 +163,7 @@ impl CommandStream {
                 Ok(s)
             },
             #[cfg(feature="rustls")]
-            CommandStream::Rustls{ mut stream, .. } => {
+            CommandStreamInner::Rustls{ mut stream, .. } => {
                 stream.sock.flush()
                     .map_err(FtpError::ConnectionError)?;
                 Ok(stream.sock)
@@ -147,40 +173,37 @@ impl CommandStream {
 
     /// Returns a reference to the underlying TcpStream.
     pub fn get_stream_ref(&self) -> &TcpStream {
-        match self {
-            CommandStream::Tcp(stream) => stream,
+        match &*self.inner {
+            CommandStreamInner::Tcp(stream) => stream,
             #[cfg(feature="native-tls")]
-            CommandStream::NativeTls{ stream, .. } => stream.get_ref(),
+            CommandStreamInner::NativeTls{ stream, .. } => stream.get_ref(),
             #[cfg(feature="rustls")]
-            CommandStream::Rustls{ stream, .. } => stream.get_ref()
+            CommandStreamInner::Rustls{ stream, .. } => stream.get_ref()
         }
+    }
+
+    pub fn timeout(&self) -> std::time::Duration {
+        self.inner.timeout()
     }
 
     /// Try to connect to the remote server
     pub fn connect_data<A: ToSocketAddrs>(&self, addr: A) -> FtpResult<DataStream> {
-        let data = TcpStream::connect(addr).map_err(FtpError::ConnectionError)?;
-
-        self.connect_data_from_stream(data)
-    }
-
-    /// Try to connect to the remote server
-    pub fn connect_data_timeout<A: ToSocketAddrs>(&self, addr: A, timeout : std::time::Duration) -> FtpResult<DataStream> {
-        let data = tcp_connect_timeout(addr, timeout).map_err(FtpError::ConnectionError)?;
+        let data = tcp_connect_timeout(addr, self.inner.timeout()).map_err(FtpError::ConnectionError)?;
 
         self.connect_data_from_stream(data)
     }
 
     pub fn connect_data_from_stream(&self, s : TcpStream) -> FtpResult<DataStream> {
-        match self {
-            CommandStream::Tcp(_) => Ok(DataStream::Tcp(s)),
+        match &*self.inner {
+            CommandStreamInner::Tcp(_) => Ok(DataStream::Tcp(s)),
             #[cfg(feature = "native-tls")]
-            CommandStream::NativeTls { domain, connector, .. } => {
+            CommandStreamInner::NativeTls { domain, connector, .. } => {
                 let stream = connector.connect(domain,s)
                     .map_err(|e| FtpError::SecureError(e.to_string()))?;
                 Ok(DataStream::NativeTls(stream))
             },
             #[cfg(feature = "rustls")]
-            CommandStream::Rustls { server_name: domain, config, .. } => {
+            CommandStreamInner::Rustls { server_name: domain, config, .. } => {
                 let conn = rustls::ClientConnection::new(config.clone(),domain.clone())
                     .map_err(|e| FtpError::SecureError(e.to_string()))?;
         
@@ -190,7 +213,6 @@ impl CommandStream {
         }
     }
 }
-
 
 impl std::fmt::Debug for CommandStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -202,18 +224,18 @@ impl std::fmt::Debug for CommandStream {
             d.field("local", &local);
         }
         
-        match self {
-            CommandStream::Tcp(_) => {
+        match &*self.inner {
+            CommandStreamInner::Tcp(_) => {
                 d.field("secure", &"no");
             },
             #[cfg(feature = "native-tls")]
-            CommandStream::NativeTls { domain, connector, .. } => {
+            CommandStreamInner::NativeTls { domain, connector, .. } => {
                 d.field("secure", &"native tls");
                 d.field("domain", domain);
                 d.field("config", connector);
             },
             #[cfg(feature="rustls")]
-            CommandStream::Rustls { server_name, config, .. } => {
+            CommandStreamInner::Rustls { server_name, config, .. } => {
                 d.field("secure", &"native tls");
                 d.field("server_name", server_name);
                 d.field("config", &**config);
@@ -225,37 +247,77 @@ impl std::fmt::Debug for CommandStream {
 }
 
 impl Read for CommandStream {
+    #[inline(always)]
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl Read for CommandStreamInner {
+    #[inline(always)]
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
-            CommandStream::Tcp(stream) => stream.read(buf),
+            CommandStreamInner::Tcp(stream) => stream.read(buf),
             #[cfg(feature="native-tls")]
-            CommandStream::NativeTls{ stream, ..} => stream.read(buf),
+            CommandStreamInner::NativeTls{ stream, ..} => stream.read(buf),
             #[cfg(feature="rustls")]
-            CommandStream::Rustls{ stream, ..} => stream.read(buf)
+            CommandStreamInner::Rustls{ stream, ..} => stream.read(buf)
         }
     }
 }
 
-impl Write for CommandStream
-{
+impl BufRead for CommandStream {
+    #[inline(always)]
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        self.inner.fill_buf()
+    }
+
+    #[inline(always)]
+    fn consume(&mut self, amt: usize) {
+        self.inner.consume(amt)
+    }
+}
+
+impl ReadLine for CommandStream {
+    #[inline(always)]
+    fn next_line(&mut self) -> std::io::Result<super::lines::Line> {
+        self.inner.next_line()
+    }
+}
+
+impl Write for CommandStream {
+    #[inline(always)]
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner.write(buf)
+    }
+
+    #[inline(always)]
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl Write for CommandStreamInner {
+    #[inline(always)]
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
-            CommandStream::Tcp(stream) => stream.write(buf),
+            CommandStreamInner::Tcp(stream) => stream.write(buf),
             #[cfg(feature="native-tls")]
-            CommandStream::NativeTls{ stream, ..} => stream.write(buf),
+            CommandStreamInner::NativeTls{ stream, ..} => stream.write(buf),
             #[cfg(feature="rustls")]
-            CommandStream::Rustls{ stream, ..} => stream.write(buf)
+            CommandStreamInner::Rustls{ stream, ..} => stream.write(buf)
         }
     }
 
+    #[inline(always)]
     fn flush(&mut self) -> std::io::Result<()>
     {
         match self {
-            CommandStream::Tcp(stream) => stream.flush(),
+            CommandStreamInner::Tcp(stream) => stream.flush(),
             #[cfg(feature="native-tls")]
-            CommandStream::NativeTls{ stream, ..} => stream.flush(),
+            CommandStreamInner::NativeTls{ stream, ..} => stream.flush(),
             #[cfg(feature="rustls")]
-            CommandStream::Rustls{ stream, ..} => stream.flush()
+            CommandStreamInner::Rustls{ stream, ..} => stream.flush()
         }
     }
 }
@@ -391,3 +453,4 @@ fn tcp_connect_timeout<A : ToSocketAddrs>(addr : A, timeout : std::time::Duratio
 
     Err(result)
 }
+

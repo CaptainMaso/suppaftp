@@ -4,7 +4,7 @@
 
 use crate::types::FileType;
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, borrow::Cow};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(unused)]
@@ -29,7 +29,7 @@ pub enum Command<'a> {
     /// Abort an active file transfer
     Abor,
     /// Append to file
-    Appe(&'a str),
+    Appe(Cow<'a,str>),
     /// Set auth to TLS
     Auth,
     /// Ask server not to encrypt command channel
@@ -37,25 +37,25 @@ pub enum Command<'a> {
     /// Change directory to parent directory
     Cdup,
     /// Change working directory
-    Cwd(&'a str),
+    Cwd(Cow<'a,str>),
     /// Remove file at specified path
-    Dele(&'a str),
+    Dele(Cow<'a,str>),
     /// Allows specification for protocol and address for data connections
     Eprt(SocketAddr),
     /// Extended passive mode <https://www.rfc-editor.org/rfc/rfc2428#section-3>
     Epsv,
     /// List entries at specified path. If path is not provided list entries at current working directory
-    List(Option<&'a str>),
+    List(Option<Cow<'a,str>>),
     /// Get modification time for file at specified path
-    Mdtm(&'a str),
+    Mdtm(Cow<'a,str>),
     /// Make directory
-    Mkd(&'a str),
+    Mkd(Cow<'a,str>),
     /// Get the list of file names at specified path. If path is not provided list entries at current working directory
-    Nlst(Option<&'a str>),
+    Nlst(Option<Cow<'a,str>>),
     /// Ping server
     Noop,
     /// Provide login password
-    Pass(&'a str),
+    Pass(Cow<'a,str>),
     /// Passive mode
     Pasv,
     /// Protection buffer size
@@ -69,25 +69,61 @@ pub enum Command<'a> {
     /// Quit
     Quit,
     /// Select file to rename
-    RenameFrom(&'a str),
+    RenameFrom(Cow<'a,str>),
     /// Rename selected file to
-    RenameTo(&'a str),
+    RenameTo(Cow<'a,str>),
     /// Resume transfer from offset
     Rest(usize),
     /// Retrieve file
-    Retr(&'a str),
+    Retr(Cow<'a,str>),
     /// Remove directory
-    Rmd(&'a str),
+    Rmd(Cow<'a,str>),
     /// Get file size of specified path
-    Size(&'a str),
+    Size(Cow<'a,str>),
     /// Put file at specified path
-    Store(&'a str),
+    Store(Cow<'a,str>),
     /// Set transfer type
     Type(FileType),
     /// Provide user to login as
-    User(&'a str),
+    User(Cow<'a,str>),
 }
 
+impl Command<'_> {
+    pub fn into_static(self) -> Command<'static> {
+        match self {
+            Command::Abor => Command::Abor,
+            Command::Appe(s) => Command::Appe(s.into_owned().into()),
+            Command::Auth => Command::Auth,
+            Command::ClearCommandChannel => Command::ClearCommandChannel,
+            Command::Cdup => Command::Cdup,
+            Command::Cwd(s) => Command::Cwd(s.into_owned().into()),
+            Command::Dele(s) => Command::Dele(s.into_owned().into()),
+            Command::Eprt(s) => Command::Eprt(s),
+            Command::Epsv => Command::Epsv,
+            Command::List(s) => Command::List(s.map(|s| s.into_owned().into())),
+            Command::Mdtm(s) => Command::Mdtm(s.into_owned().into()),
+            Command::Mkd(s) => Command::Mkd(s.into_owned().into()),
+            Command::Nlst(s) => Command::Nlst(s.map(|s| s.into_owned().into())),
+            Command::Noop => Command::Noop,
+            Command::Pass(s) => Command::Pass(s.into_owned().into()),
+            Command::Pasv => Command::Pasv,
+            Command::Pbsz(s) => Command::Pbsz(s),
+            Command::Port(s) => Command::Port(s),
+            Command::Prot(s) => Command::Prot(s),
+            Command::Pwd => Command::Pwd,
+            Command::Quit => Command::Quit,
+            Command::RenameFrom(s) => Command::RenameFrom(s.into_owned().into()),
+            Command::RenameTo(s) => Command::RenameTo(s.into_owned().into()),
+            Command::Rest(s) => Command::Rest(s),
+            Command::Retr(s) => Command::Retr(s.into_owned().into()),
+            Command::Rmd(s) => Command::Rmd(s.into_owned().into()),
+            Command::Size(s) => Command::Size(s.into_owned().into()),
+            Command::Store(s) => Command::Store(s.into_owned().into()),
+            Command::Type(s) => Command::Type(s),
+            Command::User(s) => Command::User(s.into_owned().into()),
+        }
+    }
+}
 
 impl std::fmt::Display for Command<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -152,7 +188,7 @@ mod test {
     fn should_stringify_command() {
         assert_eq!(Command::Abor.to_string().as_str(), "ABOR");
         assert_eq!(
-            Command::Appe("foobar.txt")
+            Command::Appe("foobar.txt".into())
                 .to_string()
                 .as_str(),
             "APPE foobar.txt"
@@ -161,11 +197,11 @@ mod test {
         assert_eq!(Command::ClearCommandChannel.to_string().as_str(), "CCC");
         assert_eq!(Command::Cdup.to_string().as_str(), "CDUP");
         assert_eq!(
-            Command::Cwd("/tmp").to_string().as_str(),
+            Command::Cwd("/tmp".into()).to_string().as_str(),
             "CWD /tmp"
         );
         assert_eq!(
-            Command::Dele("a.txt").to_string().as_str(),
+            Command::Dele("a.txt".into()).to_string().as_str(),
             "DELE a.txt"
         );
         assert_eq!(
@@ -190,22 +226,22 @@ mod test {
         );
         assert_eq!(Command::Epsv.to_string().as_str(), "EPSV");
         assert_eq!(
-            Command::List(Some("/tmp"))
+            Command::List(Some("/tmp".into()))
                 .to_string()
                 .as_str(),
             "LIST /tmp"
         );
         assert_eq!(Command::List(None).to_string().as_str(), "LIST");
         assert_eq!(
-            Command::Mdtm("a.txt").to_string().as_str(),
+            Command::Mdtm("a.txt".into()).to_string().as_str(),
             "MDTM a.txt"
         );
         assert_eq!(
-            Command::Mkd("/tmp").to_string().as_str(),
+            Command::Mkd("/tmp".into()).to_string().as_str(),
             "MKD /tmp"
         );
         assert_eq!(
-            Command::Nlst(Some("/tmp"))
+            Command::Nlst(Some("/tmp".into()))
                 .to_string()
                 .as_str(),
             "NLST /tmp"
@@ -213,7 +249,7 @@ mod test {
         assert_eq!(Command::Nlst(None).to_string().as_str(), "NLST");
         assert_eq!(Command::Noop.to_string().as_str(), "NOOP");
         assert_eq!(
-            Command::Pass("qwerty123")
+            Command::Pass("qwerty123".into())
                 .to_string()
                 .as_str(),
             "PASS qwerty123"
@@ -239,32 +275,32 @@ mod test {
         assert_eq!(Command::Pwd.to_string().as_str(), "PWD");
         assert_eq!(Command::Quit.to_string().as_str(), "QUIT");
         assert_eq!(
-            Command::RenameFrom("a.txt")
+            Command::RenameFrom("a.txt".into())
                 .to_string()
                 .as_str(),
             "RNFR a.txt"
         );
         assert_eq!(
-            Command::RenameTo("b.txt")
+            Command::RenameTo("b.txt".into())
                 .to_string()
                 .as_str(),
             "RNTO b.txt"
         );
         assert_eq!(Command::Rest(123).to_string().as_str(), "REST 123");
         assert_eq!(
-            Command::Retr("a.txt").to_string().as_str(),
+            Command::Retr("a.txt".into()).to_string().as_str(),
             "RETR a.txt"
         );
         assert_eq!(
-            Command::Rmd("/tmp").to_string().as_str(),
+            Command::Rmd("/tmp".into()).to_string().as_str(),
             "RMD /tmp"
         );
         assert_eq!(
-            Command::Size("a.txt").to_string().as_str(),
+            Command::Size("a.txt".into()).to_string().as_str(),
             "SIZE a.txt"
         );
         assert_eq!(
-            Command::Store("a.txt").to_string().as_str(),
+            Command::Store("a.txt".into()).to_string().as_str(),
             "STOR a.txt"
         );
         assert_eq!(
@@ -272,7 +308,7 @@ mod test {
             "TYPE I"
         );
         assert_eq!(
-            Command::User("omar").to_string().as_str(),
+            Command::User("omar".into()).to_string().as_str(),
             "USER omar"
         );
     }

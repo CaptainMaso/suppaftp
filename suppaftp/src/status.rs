@@ -4,6 +4,7 @@
 
 use thiserror::Error;
 
+
 #[derive(Debug, Copy, Clone, Error, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u32)]
 /// Ftp status returned after command execution

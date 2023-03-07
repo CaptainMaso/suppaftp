@@ -3,9 +3,7 @@
 //! The set of valid values for FTP commands
 
 use super::Status;
-use std::convert::From;
 use std::fmt;
-use std::string::FromUtf8Error;
 use thiserror::Error;
 
 /// A shorthand for a Result whose error type is always an FtpError.
@@ -25,7 +23,7 @@ pub enum FtpError {
     /// This means the ftp server refused to perform your request or there was an error while processing it.
     /// Contains the response data.
     #[error("Invalid response: {0}")]
-    UnexpectedResponse(Response),
+    UnexpectedResponse(CompleteResponse),
     /// The response syntax is invalid
     #[error("Response contains an invalid syntax")]
     BadResponse,
@@ -34,56 +32,37 @@ pub enum FtpError {
     InvalidAddress(std::net::AddrParseError),
 }
 
-/// Defines a response from the ftp server
-#[derive(Clone, Error)]
-pub struct Response {
-    pub status: Status,
-    pub body: Vec<u8>,
+impl From<std::io::Error> for FtpError {
+    fn from(value: std::io::Error) -> Self {
+        Self::ConnectionError(value)
+    }
 }
 
-impl std::fmt::Debug for Response {
+#[derive(Debug,Clone)]
+pub struct CompleteResponse {
+    pub status : Status,
+    pub lines : Vec<String>
+}
+
+impl fmt::Display for CompleteResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut d = f.debug_struct("Response");
-        d.field("status", &self.status);
-        if let Ok(s) = std::str::from_utf8(&self.body) {
-            d.field("body", &s);
-        }
-        else {
-            struct Hex<'a>(&'a [u8]);
+        f.pad(&format!("Status: {}\n", self.status))?;
 
-            impl std::fmt::Debug for Hex<'_> {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                    write!(f,"{:X?}", &self.0)
-                }
-            }
-
-            d.field("body", &Hex(&self.body));
+        for l in &self.lines {
+            f.pad(l.trim_end())?;
         }
 
-        d.finish()
+        Ok(())
     }
 }
 
-impl fmt::Display for Response {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "[{}] {}",
-            self.status.code(),
-            self.as_string().ok().unwrap_or_default()
-        )
-    }
-}
-
-impl Response {
-    /// Instantiates a new `Response`
-    pub fn new(status: Status, body: Vec<u8>) -> Self {
-        Self { status, body }
+impl CompleteResponse {
+    pub fn lines(&self) -> impl Iterator<Item = &str> {
+        self.lines.iter().map(|s| &**s)
     }
 
-    /// Get response as string
-    pub fn as_string(&self) -> Result<String, FromUtf8Error> {
-        String::from_utf8(self.body.clone()).map(|x| x.trim_end().to_string())
+    pub fn body(&self) -> String {
+        self.lines.join("\n")
     }
 }
 
@@ -167,36 +146,8 @@ mod test {
             "Secure error: omar"
         );
         assert_eq!(
-            FtpError::UnexpectedResponse(Response::new(
-                Status::ExceededStorage,
-                "error".as_bytes().to_vec()
-            ))
-            .to_string()
-            .as_str(),
-            "Invalid response: [552] error"
-        );
-        assert_eq!(
             FtpError::BadResponse.to_string().as_str(),
             "Response contains an invalid syntax"
-        );
-    }
-
-    #[test]
-    fn response() {
-        let response: Response = Response::new(Status::AboutToSend, "error".as_bytes().to_vec());
-        assert_eq!(response.status, Status::AboutToSend);
-        assert_eq!(response.as_string().unwrap(), "error");
-    }
-
-    #[test]
-    fn fmt_response() {
-        let response: Response = Response::new(
-            Status::FileUnavailable,
-            "Can't create directory: File exists".as_bytes().to_vec(),
-        );
-        assert_eq!(
-            response.to_string().as_str(),
-            "[550] Can't create directory: File exists"
         );
     }
 
