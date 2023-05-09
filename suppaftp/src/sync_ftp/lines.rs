@@ -1,8 +1,11 @@
-use std::io::{Write, BufRead};
+use std::io::BufRead;
 
 pub trait ReadLine: Sized {
     fn next_line(&mut self) -> std::io::Result<Line>;
     fn iter(&mut self) -> ReadLineIter<&mut Self> {
+        ReadLineIter { reader: self }
+    }
+    fn into_iter(self) -> ReadLineIter<Self> {
         ReadLineIter { reader: self }
     }
 }
@@ -27,6 +30,7 @@ impl<R : ReadLine + ?Sized> std::iter::Iterator for ReadLineIter<R> {
     }
 }
 
+#[derive(Debug)]
 pub enum Line {
     /// The next line including the end of line marker (\r\n or \n)
     Line(String),
@@ -61,43 +65,51 @@ impl Line {
 
 impl<R : std::io::Read> ReadLine for Lines<R> {
     fn next_line(&mut self) -> std::io::Result<Line> {
-        let mut read = 0;
-        let t_start = std::time::Instant::now();
-        while t_start.elapsed() < self.timeout {
-            let pre_len = self.buffer_len();
-            let available = match self.fill_buf() {
-                Ok(data) => data,
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e),
-            };
-
-            let eof = self.buffer_len() == pre_len;
-
-            let found = available.iter()
-                .skip(pre_len)
-                .position(|b| *b == b'\n');
-            
-            let (line,into_line_fn) : (_,&dyn Fn(String) -> Line) = if let Some(nl_pos) = found {
-                (&available[..nl_pos], &Line::Line)
-            }
-            else if eof {
-                if self.buffer_empty() {
-                    return Ok(Line::EOF);
-                }
-                (self.buffer(), &Line::LastLine)
-            }
-            else {
-                continue;
-            };
-
-            self.consume(line.len());
-
-            return std::str::from_utf8(line)
-                .map(ToString::to_string)
-                .map(into_line_fn)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData,e));
+        if self.buffer_empty() && self.eof {
+            return Ok(Line::EOF);
         }
 
+        let t_start = std::time::Instant::now();
+        while t_start.elapsed() < self.timeout {
+            if self.needs_data() {
+                match self.fill_buf() {
+                    Ok(data) => data,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+                    Err(e) => {
+                        self.eof = true;
+                        return Err(e)
+                    },
+                };
+            }
+            
+            let (len,into_line_fn) : (_,&dyn Fn(String) -> Line) = 
+                if let Some(nl_pos) = self.search_nl() {
+                    (nl_pos + 1, &Line::Line)
+                }
+                else if self.eof {
+                    (self.buffer_len(),&Line::LastLine)
+                }
+                else {
+                    continue;
+                };
+
+            let range = self.buffer_read_cursor..self.buffer_read_cursor + len;
+
+            self.buffer_read_cursor += len;
+            self.buffer_read_cursor = self.buffer_read_cursor.min(self.buffer_end);
+
+            let s = std::str::from_utf8(&self.buffer[range])
+                .map(ToString::to_string)
+                .map(into_line_fn)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData,e))?;
+
+            println!("line: {:?}", s);
+            return Ok(s)
+        }
+
+        self.eof = true;
         return Ok(Line::Timeout(self.timeout))
     }
 }
@@ -110,48 +122,104 @@ pub struct Lines<R> {
     reader : R,
     timeout : std::time::Duration,
     buffer : Box<[u8]>,
-    buffer_cursor : usize,
+    buffer_read_cursor : usize,
+    buffer_search_cursor : usize,
     buffer_end : usize,
+    eof : bool
 }
 
 impl<R> Lines<R> {
     pub fn new(reader : R, timeout : std::time::Duration) -> Self {
-        Self { timeout, buffer: vec![0;1024].into(), buffer_cursor : 0, buffer_end : 0, reader }
+        Self { timeout, buffer: vec![0;1024].into(), buffer_read_cursor : 0, buffer_search_cursor : 0, buffer_end : 0, reader, eof : false }
     }
 }
 
 impl<R : std::io::Read> Lines<R> {
-    pub fn first_line(&mut self) -> std::io::Result<String> {
-        self.next_line()?
-            .timeout_error()?
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::UnexpectedEof,"Did not get any response from server"))
-    }
-
     pub fn buffer_empty(&self) -> bool {
-        self.buffer_cursor == self.buffer_end
+        self.buffer_read_cursor == self.buffer_end
     }
 
     pub fn buffer_len(&self) -> usize {
-        self.buffer_end - self.buffer_cursor
+        self.buffer_end - self.buffer_read_cursor
     }
 
     pub fn buffer_full(&self) -> bool {
         self.buffer_end == self.buffer.len()
     }
 
+    pub fn realign_buffer(&mut self) {
+        if self.buffer_read_cursor == 0 {
+            return;
+        }
+
+        self.buffer.copy_within(self.buffer_read_cursor..self.buffer_end, 0);
+        self.buffer_end -= self.buffer_read_cursor;
+        self.buffer_search_cursor -= self.buffer_read_cursor;
+        self.buffer_read_cursor = 0;
+
+        /*let parts = if len > self.buffer_read_cursor {
+            &[
+                (0,self.buffer_read_cursor,self.buffer_read_cursor),
+                (self.buffer_read_cursor,self.buffer_read_cursor,len - self.buffer_read_cursor),
+            ][..]
+        }
+        else {
+            &[
+                (0,self.buffer_read_cursor,len)
+            ][..]
+        };
+        
+        for (src,dest, len) in parts {
+            let src_range = *src .. *src + *len;
+            let dest_range = *dest .. *dest + *len;
+            let src_ptr = &mut self.buffer[src_range] as *mut [u8;
+            let dest_ptr = &mut self.buffer[dest_range] as *mut u8;
+            
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    src_ptr,
+                    dest_ptr,
+                    *len
+                )
+            }
+        }*/
+    }
+
     pub fn grow_buffer(&mut self) {
-        let buffer_len = self.buffer_len();
         let new_cap = self.buffer.len() * 2;
         let mut new = Vec::with_capacity(new_cap);
         new.extend_from_slice(self.buffer());
         new.resize(new_cap, 0);
         self.buffer = new.into();
-        self.buffer_cursor = 0;
-        self.buffer_end = buffer_len;
+        self.buffer_search_cursor -= self.buffer_read_cursor;
+        self.buffer_end -= self.buffer_read_cursor;
+        self.buffer_read_cursor = 0;
+    }
+
+    pub fn search_nl(&mut self) -> Option<usize> {
+        let to_skip = self.buffer_search_cursor - self.buffer_read_cursor;
+        let found = self.buffer()
+            .iter()
+            .skip(to_skip)
+            .position(|b| *b == b'\n')
+            .map(|f| f + to_skip);
+
+        if let Some(found) = found {
+            self.buffer_search_cursor = self.buffer_read_cursor + found + 1;
+        }
+        else {
+            self.buffer_search_cursor = self.buffer_end;
+        }
+
+        found
+    }
+
+    pub fn needs_data(&self) -> bool {
+        self.buffer_search_cursor == self.buffer_end
     }
 
     pub fn buffer(&self) -> &[u8] {
-        &self.buffer[self.buffer_cursor..self.buffer_end]
+        &self.buffer[self.buffer_read_cursor..self.buffer_end]
     }
 
     pub fn timeout(&self) -> std::time::Duration {
@@ -181,23 +249,27 @@ impl<R : std::io::Read> std::io::Read for Lines<R> {
 
 impl<R : std::io::Read> BufRead for Lines<R> {
     fn consume(&mut self, consume : usize) {
-        self.buffer_cursor += consume;
-        self.buffer_cursor = self.buffer_cursor.min(self.buffer_end);
+        self.buffer_read_cursor += consume;
+        self.buffer_read_cursor = self.buffer_read_cursor.min(self.buffer_end);
     }
 
     fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
-        if self.buffer_full() {
-            self.grow_buffer();
-        }
-
+        self.realign_buffer();
         if self.buffer_empty() {
             // Reset buffer if our cursor has caught the loaded data
-            self.buffer_cursor = 0;
+            self.buffer_read_cursor = 0;
+            self.buffer_search_cursor = 0;
             self.buffer_end = 0;
+        }
+        else if self.buffer_full() {
+            self.grow_buffer();
         }
 
         let new_data = self.reader.read(&mut self.buffer[self.buffer_end..])?;
 
+        if new_data == 0 {
+            self.eof = true;
+        }
         self.buffer_end += new_data;
 
         Ok(self.buffer())
@@ -206,23 +278,23 @@ impl<R : std::io::Read> BufRead for Lines<R> {
 
 impl<R : std::io::Write> std::io::Write for Lines<R> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.write(buf)
+        R::write(self,buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.flush()
+        R::flush(self)
     }
 
     fn write_vectored(&mut self, bufs: &[std::io::IoSlice<'_>]) -> std::io::Result<usize> {
-        self.write_vectored(bufs)
+        R::write_vectored(self,bufs)
     }
 
-    fn write_all(&mut self, mut buf: &[u8]) -> std::io::Result<()> {
-        self.write_all(buf)
+    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        R::write_all(self,buf)
     }
 
     fn write_fmt(&mut self, fmt: std::fmt::Arguments<'_>) -> std::io::Result<()> {
-        self.write_fmt(fmt)
+        R::write_fmt(self,fmt)
     }
 }
 
@@ -245,17 +317,38 @@ mod test {
     use super::*;
 
     const SINGLE_LINE : &str = "THIS IS A SINGLE LINE";
-    const SINGLE_LINE_NL_END : &str = "THIS IS A SINGLE LINE\n";
+    const SINGLE_LINE_NL_END : &str = "THIS IS A SINGLE LINE WITH NL END\n";
     const TWO_LINE : &str = "THIS IS A SINGLE LINE\nWITH AN EXTRA LINE TOO";
     const TWO_LINE_NL_END : &str = "THIS IS A SINGLE LINE\nWITH AN EXTRA LINE TOO WITH A NEW LINE\n";
 
     #[test]
     fn test_function() {
-        let reader = Lines::new(LOREM_IPSUM.as_bytes(),std::time::Duration::from_secs(1));
+        let mut reader = Lines::new(LOREM_IPSUM.as_bytes(),std::time::Duration::from_secs(60));
 
-        for l in reader.iter() {
+        for (l,test) in reader.iter().zip(LOREM_IPSUM.lines()) {
             let l = l.unwrap();
-            println!("{l}")
+            println!("{} vs {}", l.escape_default(), test.escape_default());
+            assert_eq!(l.trim_end(), test.trim_end())
+        }
+
+        let mut reader = Lines::new(SINGLE_LINE.as_bytes(),std::time::Duration::from_secs(60));
+        assert_eq!(SINGLE_LINE, reader.iter().next().unwrap().unwrap());
+
+        let mut reader = Lines::new(SINGLE_LINE_NL_END.as_bytes(),std::time::Duration::from_secs(60));
+        assert_eq!(SINGLE_LINE_NL_END, reader.iter().next().unwrap().unwrap());
+
+        let mut reader = Lines::new(TWO_LINE.as_bytes(),std::time::Duration::from_secs(60));
+        for (l,test) in reader.iter().zip(TWO_LINE.lines()) {
+            let l = l.unwrap();
+            println!("{} vs {}", l.escape_default(), test.escape_default());
+            assert_eq!(l.trim_end(), test.trim_end())
+        }
+
+        let mut reader = Lines::new(TWO_LINE_NL_END.as_bytes(),std::time::Duration::from_secs(60));
+        for (l,test) in reader.iter().zip(TWO_LINE_NL_END.lines()) {
+            let l = l.unwrap();
+            println!("{} vs {}", l.escape_default(), test.escape_default());
+            assert_eq!(l.trim_end(), test.trim_end())
         }
     }
 
@@ -274,5 +367,16 @@ Justo eget magna fermentum iaculis eu. In aliquam sem fringilla ut morbi tincidu
 Massa id neque aliquam vestibulum morbi. Tempus egestas sed sed risus pretium. Laoreet sit amet cursus sit. 
 Bibendum ut tristique et egestas quis ipsum suspendisse ultrices. 
 Molestie ac feugiat sed lectus vestibulum mattis ullamcorper.
+
+
+
+Eget duis at tellus at urna condimentum mattis pellentesque id. 
+Amet consectetur adipiscing elit duis tristique sollicitudin. 
+Eleifend quam adipiscing vitae proin sagittis nisl rhoncus mattis rhoncus. 
+Dolor morbi non arcu risus quis varius quam. Sit amet risus nullam eget felis. 
+Vulputate sapien nec sagittis aliquam malesuada bibendum. Vel pharetra vel turpis nunc. 
+Justo eget magna fermentum iaculis eu. In aliquam sem fringilla ut morbi tincidunt augue interdum. 
+Massa id neque aliquam vestibulum morbi. Tempus egestas sed sed risus pretium. Laoreet sit amet cursus sit. 
+
 "##;
 }

@@ -189,7 +189,8 @@ impl CommandStream {
     /// Try to connect to the remote server
     pub fn connect_data<A: ToSocketAddrs>(&self, addr: A) -> FtpResult<DataStream> {
         let data = tcp_connect_timeout(addr, self.inner.timeout()).map_err(FtpError::ConnectionError)?;
-
+        data.set_read_timeout(Some(self.timeout()))?;
+        trace!("TCP Stream to data socket opened");
         self.connect_data_from_stream(data)
     }
 
@@ -197,15 +198,16 @@ impl CommandStream {
         match &*self.inner {
             CommandStreamInner::Tcp(_) => Ok(DataStream::Tcp(s)),
             #[cfg(feature = "native-tls")]
-            CommandStreamInner::NativeTls { domain, connector, .. } => {
-                let stream = connector.connect(domain,s)
-                    .map_err(|e| FtpError::SecureError(e.to_string()))?;
-                Ok(DataStream::NativeTls(stream))
+            CommandStreamInner::NativeTls { domain, connector, stream  } => {
+                let data_stream = connector.connect(domain,s)
+                    .map_err(|e| FtpError::SecureError(format!("{e:#?}")))?;
+                //println!("Data cert: {:#?}", data_stream.peer_certificate());
+                Ok(DataStream::NativeTls(data_stream))
             },
             #[cfg(feature = "rustls")]
             CommandStreamInner::Rustls { server_name: domain, config, .. } => {
                 let conn = rustls::ClientConnection::new(config.clone(),domain.clone())
-                    .map_err(|e| FtpError::SecureError(e.to_string()))?;
+                    .map_err(|e| FtpError::SecureError(format!("{e:#?}")))?;
         
                 let stream = Box::new(rustls::StreamOwned::new(conn,s));
                 Ok(DataStream::Rustls(stream))
@@ -400,6 +402,10 @@ impl DataStream {
             #[cfg(feature = "rustls")]
             DataStream::Rustls { .. } => true,
         }
+    }
+
+    pub fn set_read_timeout(&mut self, timeout : Option<std::time::Duration>) -> std::io::Result<()> {
+        self.get_tcp_ref().set_read_timeout(timeout)
     }
 }
 

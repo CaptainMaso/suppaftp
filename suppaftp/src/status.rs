@@ -39,7 +39,7 @@ pub enum Status {
     Closing = 221,
     #[error("data connection open; no transfer in progress")]
     DataConnectionOpen = 225,
-    #[error("closingh data connection")]
+    #[error("closing data connection")]
     ClosingDataConnection = 226,
     #[error("entering passive mode")]
     PassiveMode = 227,
@@ -54,7 +54,7 @@ pub enum Status {
     #[error("logout command noted, will complete when transfer done")]
     LogoutAck = 232,
     #[error(
-        "specifies that the server accepts the authentication mechanism specified by the client"
+        "the server accepts the authentication mechanism specified by the client"
     )]
     AuthOk = 234,
     #[error("requested file action okay")]

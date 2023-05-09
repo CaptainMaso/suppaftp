@@ -40,6 +40,7 @@ impl From<std::io::Error> for FtpError {
 
 #[derive(Debug,Clone)]
 pub struct CompleteResponse {
+    pub command : Option<super::command::Command<'static>>,
     pub status : Status,
     pub lines : Vec<String>
 }
