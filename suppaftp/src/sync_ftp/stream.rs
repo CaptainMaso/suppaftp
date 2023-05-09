@@ -201,14 +201,14 @@ impl CommandStream {
             CommandStreamInner::NativeTls { domain, connector, stream  } => {
                 let data_stream = connector.connect(domain,s)
                     .map_err(|e| FtpError::SecureError(format!("{e:#?}")))?;
-                //println!("Data cert: {:#?}", data_stream.peer_certificate());
+                trace!("Native TLS Data stream opened");
                 Ok(DataStream::NativeTls(data_stream))
             },
             #[cfg(feature = "rustls")]
             CommandStreamInner::Rustls { server_name: domain, config, .. } => {
                 let conn = rustls::ClientConnection::new(config.clone(),domain.clone())
                     .map_err(|e| FtpError::SecureError(format!("{e:#?}")))?;
-        
+                trace!("RusTLS TLS Data stream opened");
                 let stream = Box::new(rustls::StreamOwned::new(conn,s));
                 Ok(DataStream::Rustls(stream))
             },

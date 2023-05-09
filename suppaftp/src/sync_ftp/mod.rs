@@ -520,9 +520,9 @@ impl FtpStream {
 
                 trace!("Clearing active data response: {resp:#?}");
 
-                let resp = Response::new(&mut self.cmd, None)?;
+                let mut response = Response::new(&mut self.cmd, None)?;
 
-                let unexpected_resp = !final_response.contains(&resp.status());
+                let unexpected_resp = !final_response.contains(&response.status());
 
                 let final_resp = response.finalise(&mut self.cmd)?;
                 

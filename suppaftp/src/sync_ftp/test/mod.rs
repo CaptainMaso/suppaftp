@@ -92,7 +92,9 @@ fn should_work_after_clear_command_channel_native_tls() {
     ftp_stream.login("demo", "password").unwrap();
     // CCC
     println!("PWD: {}", ftp_stream.pwd().unwrap());
-    println!("DIR: {:#?}", ftp_stream.list(None).unwrap().collect::<Vec<_>>());
+    // PWD
+    assert_eq!(ftp_stream.pwd().unwrap().as_str(), "/");
+    println!("DIR: {:#?}", ftp_stream.list(None).unwrap().collect::<Result<Vec<_>,_>>().unwrap());
     ftp_stream.quit().unwrap();
 }
 
@@ -104,21 +106,24 @@ fn should_connect_ssl_rustls() {
     crate::log_init();
     let config = rustls_config();
 
-    let ftp_result = crate::FtpStream::connect("ftp.dlptest.com:21").unwrap()
+    let mut ftp_stream = crate::FtpStream::connect("test.rebex.net:21").unwrap()
         .secure_with(
-            "ftp.dlptest.com",
+            "test.rebex.net",
             config,
-        );
+        )
+        .unwrap();
 
-    match ftp_result {
-        Ok(ftp_stream) => {
-            assert!(ftp_stream.close().is_ok());
-        }
-        Err(e) => {
-            println!("{e:?}");
-            panic!("Error connecting to ftp")
-        }
-    }
+    // Set timeout (to test ref to ssl)
+    assert!(ftp_stream
+        .set_read_timeout(std::time::Duration::from_secs(10))
+        .is_ok());
+    // Login
+    assert!(ftp_stream.login("demo", "password").is_ok());
+    // PWD
+    assert_eq!(ftp_stream.pwd().unwrap().as_str(), "/");
+    println!("DIR: {:#?}", ftp_stream.list(None).unwrap().collect::<Result<Vec<_>,_>>().unwrap());
+    // Quit
+    assert!(ftp_stream.quit().is_ok());
 }
 
 #[test]

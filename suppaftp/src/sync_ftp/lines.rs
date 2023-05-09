@@ -95,6 +95,10 @@ impl<R : std::io::Read> ReadLine for Lines<R> {
                     continue;
                 };
 
+            if self.eof && len == 0 {
+                return Ok(Line::EOF);
+            }
+
             let range = self.buffer_read_cursor..self.buffer_read_cursor + len;
 
             self.buffer_read_cursor += len;
